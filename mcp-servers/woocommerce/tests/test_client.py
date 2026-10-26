@@ -145,6 +145,55 @@ class TestCreateProduct:
         assert (await make_client(lambda r: ok(PRODUCT)).create_product(name="Freebie", regular_price="0"))["id"] == 9
 
 
+class TestUpdateProduct:
+    async def test_sends_only_the_changed_fields_with_put(self):
+        seen = {}
+
+        def handler(request):
+            seen["method"], seen["url"] = request.method, str(request.url)
+            seen["body"] = json.loads(request.content)
+            return ok(PRODUCT)
+
+        await make_client(handler).update_product(9, name=" Big Mug ", regular_price="399", stock_quantity=12)
+        assert seen["method"] == "PUT" and seen["url"].endswith("/products/9")
+        assert seen["body"] == {"name": "Big Mug", "regular_price": "399", "manage_stock": True, "stock_quantity": 12}
+
+    async def test_a_call_with_nothing_to_change_is_rejected(self):
+        with pytest.raises(ValueError, match="at least one field"):
+            await make_client(lambda r: ok(PRODUCT)).update_product(9)
+
+    @pytest.mark.parametrize(
+        "kwargs,match",
+        [
+            ({"name": " "}, "Product name"),
+            ({"regular_price": "1e5"}, "Price"),
+            ({"status": "deleted"}, "product status"),
+            ({"stock_quantity": -1}, "Stock quantity"),
+            ({"stock_quantity": True}, "Stock quantity"),
+        ],
+    )
+    async def test_invalid_values_are_rejected_before_any_request(self, kwargs, match):
+        def handler(request):
+            raise AssertionError("no request should be made")
+
+        with pytest.raises(ValueError, match=match):
+            await make_client(handler).update_product(9, **kwargs)
+
+    async def test_updates_are_not_retried(self):
+        attempts = []
+
+        def handler(request):
+            attempts.append(1)
+            raise httpx.ReadTimeout("slow", request=request)
+
+        with pytest.raises(WooCommerceTimeoutError):
+            await make_client(handler).update_product(9, name="Mug")
+        assert len(attempts) == 1
+
+    async def test_get_product_reads_one_product(self):
+        assert (await make_client(lambda r: ok(PRODUCT)).get_product(9))["id"] == 9
+
+
 class TestFailureHandling:
     @pytest.mark.parametrize("status", [401, 403])
     async def test_auth_failures(self, status):

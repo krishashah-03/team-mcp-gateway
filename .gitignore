@@ -25,3 +25,6 @@ Thumbs.db
 # Build artifacts
 dist/
 build/
+
+# Kubernetes secrets (the chart only references them; see deploy/secrets.env.example)
+deploy/secrets.env

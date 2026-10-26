@@ -217,3 +217,7 @@ td select { width: auto; padding: 0.3rem 0.5rem; }
 .trace-label { font-size: 0.72rem; color: var(--muted); margin: 0.4rem 0 0.15rem; }
 .composer { display: flex; gap: 0.5rem; align-items: flex-end; margin-top: 0.5rem; }
 .composer textarea { flex: 1; padding: 0.55rem 0.7rem; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; resize: vertical; max-height: 200px; }
+
+.run-tool { display: grid; gap: 0.5rem; margin-top: 0.6rem; justify-items: start; }
+.run-tool textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; width: 100%; }
+.run-tool > * { max-width: 100%; }

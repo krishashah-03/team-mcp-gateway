@@ -1,0 +1,22 @@
+Team MCP Gateway installed as "{{ .Release.Name }}".
+
+Wait for the pods:   kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }} -w
+{{- if .Values.ingress.enabled }}
+
+Dashboard / MCP endpoint:  http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}   (MCP: /mcp)
+{{- else }}
+
+Open the dashboard:  kubectl port-forward svc/{{ include "tmg.fullname" . }}-web 8080:8080
+                     then http://localhost:8080   (MCP endpoint: http://localhost:8080/mcp)
+{{- end }}
+
+Sign in with the bootstrap admin from your Secret (BOOTSTRAP_ADMIN_EMAIL / BOOTSTRAP_ADMIN_PASSWORD).
+{{- if and (gt (int .Values.gateway.replicas) 1) (eq .Values.gateway.migrations "init") }}
+
+WARNING: gateway.replicas > 1 with gateway.migrations=init makes every replica run migrations.
+         Use --set gateway.migrations=hook.
+{{- end }}
+{{- if and (not .Values.networkPolicy.enabled) }}
+
+NOTE: networkPolicy.enabled=false - nothing restricts which pods can reach the database or MCP servers.
+{{- end }}

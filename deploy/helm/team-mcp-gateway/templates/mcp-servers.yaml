@@ -1,0 +1,96 @@
+{{- $fn := include "tmg.fullname" . }}
+{{- $servers := list
+  (dict "key" "woocommerce" "name" "woocommerce-mcp" "port" 8001 "image" .Values.image.woocommerceMcp "token" "WOOCOMMERCE_MCP_TOKEN" "cfg" .Values.woocommerce)
+  (dict "key" "utilities" "name" "utilities-mcp" "port" 8003 "image" .Values.image.utilitiesMcp "token" "UTILITIES_MCP_TOKEN" "cfg" .Values.utilities)
+  (dict "key" "docs" "name" "docs-mcp" "port" 8004 "image" .Values.image.docsMcp "token" "DOCS_MCP_TOKEN" "cfg" .Values.docs) }}
+{{- range $s := $servers }}
+{{- $svc := printf "%s-%s" $fn $s.name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $svc }}
+  labels:
+    {{- include "tmg.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $s.name }}
+spec:
+  replicas: {{ $s.cfg.replicas }}
+  selector:
+    matchLabels:
+      {{- include "tmg.selector" (dict "root" $ "component" $s.name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tmg.selector" (dict "root" $ "component" $s.name) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- include "tmg.pullSecrets" $ | nindent 6 }}
+      securityContext:
+        {{- include "tmg.podSecurity" (dict "uid" 10001) | nindent 8 }}
+      {{- if and (eq $s.key "woocommerce") $s.cfg.hostAliases }}
+      hostAliases:
+        {{- toYaml $s.cfg.hostAliases | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: server
+          image: {{ include "tmg.image" (dict "root" $ "name" $s.image) }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - {name: http, containerPort: {{ $s.port }}}
+          env:
+            - name: MCP_AUTH_TOKEN
+              valueFrom:
+                {{- include "tmg.secretKey" (dict "root" $ "key" $s.token) | nindent 16 }}
+            - {name: MCP_ALLOWED_HOSTS, value: "{{ $svc }}:*"}
+            {{- if eq $s.key "woocommerce" }}
+            - {name: WOOCOMMERCE_BASE_URL, value: {{ $s.cfg.baseUrl | quote }}}
+            - name: WOOCOMMERCE_CONSUMER_KEY
+              valueFrom:
+                {{- include "tmg.secretKey" (dict "root" $ "key" "WOOCOMMERCE_CONSUMER_KEY") | nindent 16 }}
+            - name: WOOCOMMERCE_CONSUMER_SECRET
+              valueFrom:
+                {{- include "tmg.secretKey" (dict "root" $ "key" "WOOCOMMERCE_CONSUMER_SECRET") | nindent 16 }}
+            {{- if $s.cfg.caBundleSecret }}
+            - {name: WOOCOMMERCE_CA_BUNDLE, value: /certs/ca.crt}
+            {{- end }}
+            {{- end }}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 4
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 4
+          resources:
+            {{- toYaml $s.cfg.resources | nindent 12 }}
+          securityContext:
+            {{- include "tmg.containerSecurity" $ | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            {{- if and (eq $s.key "woocommerce") $s.cfg.caBundleSecret }}
+            - {name: ca, mountPath: /certs, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if and (eq $s.key "woocommerce") $s.cfg.caBundleSecret }}
+        - name: ca
+          secret:
+            secretName: {{ $s.cfg.caBundleSecret }}
+        {{- end }}
+---
+# ClusterIP only: an MCP server is never exposed outside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svc }}
+  labels:
+    {{- include "tmg.labels" $ | nindent 4 }}
+spec:
+  selector:
+    {{- include "tmg.selector" (dict "root" $ "component" $s.name) | nindent 4 }}
+  ports:
+    - {name: http, port: {{ $s.port }}, targetPort: http}
+{{- end }}

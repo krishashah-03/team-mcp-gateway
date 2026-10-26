@@ -273,6 +273,8 @@ export const api = {
   revokeKey: (keyId: string) => del<ApiKey>(`/keys/${keyId}`),
 
   tools: () => get<GatewayTool[]>("/tools"),
+  callTool: (name: string, args: Record<string, unknown>) =>
+    post<{ is_error: boolean; text: string }>("/tools/call", { name, arguments: args }),
 
   permissions: () => get<PermissionRule[]>("/permissions"),
   setPermission: (rule: {

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { api, type GatewayTool } from "../lib/api";
 import { pluralize } from "../lib/format";
 import { useLoad } from "../lib/useLoad";
-import { Empty, ErrorNote, Loading, PageHeader, TextInput } from "../components/ui";
+import { Badge, Button, Empty, ErrorNote, Loading, PageHeader, TextArea, TextInput } from "../components/ui";
 
 export function groupByServer(tools: GatewayTool[]): [string, GatewayTool[]][] {
   const groups = new Map<string, GatewayTool[]>();
@@ -11,6 +11,71 @@ export function groupByServer(tools: GatewayTool[]): [string, GatewayTool[]][] {
     groups.set(slug, [...(groups.get(slug) ?? []), tool]);
   }
   return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
+/** A starting point for the arguments: every required property with a placeholder of the right type. */
+export function exampleArguments(schema: Record<string, unknown>): string {
+  const properties = (schema.properties ?? {}) as Record<string, { type?: string; default?: unknown }>;
+  const required = Array.isArray(schema.required) ? (schema.required as string[]) : [];
+  const example: Record<string, unknown> = {};
+  for (const key of required) {
+    const spec = properties[key] ?? {};
+    example[key] = spec.default ?? (spec.type === "integer" || spec.type === "number" ? 1 : spec.type === "boolean" ? false : "");
+  }
+  return JSON.stringify(example, null, 2);
+}
+
+function RunTool({ tool }: { tool: GatewayTool }) {
+  const [text, setText] = useState(() => exampleArguments(tool.input_schema));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{ is_error: boolean; text: string } | null>(null);
+
+  async function run() {
+    setError(null);
+    setResult(null);
+    let args: unknown;
+    try {
+      args = text.trim() ? JSON.parse(text) : {};
+    } catch {
+      setError("The arguments are not valid JSON.");
+      return;
+    }
+    if (typeof args !== "object" || args === null || Array.isArray(args)) {
+      setError("The arguments must be a JSON object, like {\"name\": \"value\"}.");
+      return;
+    }
+    setBusy(true);
+    try {
+      setResult(await api.callTool(tool.name, args as Record<string, unknown>));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The call failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="run-tool">
+      <TextArea
+        label={`Arguments for ${tool.name} (JSON)`}
+        rows={Math.min(10, text.split("\n").length + 1)}
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        spellCheck={false}
+      />
+      <Button onClick={run} disabled={busy}>
+        {busy ? "Running…" : "Run tool"}
+      </Button>
+      <ErrorNote message={error} />
+      {result ? (
+        <div role="status">
+          <Badge tone={result.is_error ? "red" : "green"}>{result.is_error ? "Error" : "Success"}</Badge>
+          <pre className="schema">{result.text || "(no output)"}</pre>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export default function ToolsPage() {
@@ -29,7 +94,7 @@ export default function ToolsPage() {
     <>
       <PageHeader
         title="Tools"
-        subtitle="Everything you can use through the gateway or the chat assistant, from every enabled server."
+        subtitle="Everything you can use through the gateway or the chat assistant. Open a tool and press Run to try it directly."
       />
       <TextInput
         label="Search tools"
@@ -58,6 +123,7 @@ export default function ToolsPage() {
                   </summary>
                   {tool.description ? <p>{tool.description}</p> : null}
                   <pre className="schema">{JSON.stringify(tool.input_schema, null, 2)}</pre>
+                  <RunTool tool={tool} />
                 </details>
               </li>
             ))}

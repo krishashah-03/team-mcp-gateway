@@ -1,10 +1,11 @@
 """LLM provider adapters for the chat agent.
 
 The agent talks to a small provider-neutral interface, so swapping Gemini for another
-model means writing one adapter and nothing else. Only Gemini is implemented.
+model means writing one adapter and nothing else. Implemented: OpenRouter and Gemini.
 """
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -223,7 +224,7 @@ class GeminiProvider:
                 except httpx.RequestError:
                     raise ChatProviderError("Could not reach the model service.") from None
 
-                if response.status_code == 429 and attempt == 1:
+                if (response.status_code == 429 or response.status_code >= 500) and attempt == 1:
                     await asyncio.sleep(2.0)
                     continue
                 break
@@ -238,6 +239,7 @@ class GeminiProvider:
         if response.status_code == 404:
             raise ChatProviderError(f"Gemini model '{self._model}' was not found. Check GEMINI_MODEL.")
         if response.status_code >= 500:
+            logger.error("Gemini returned %s: %s", response.status_code, response.text[:500])
             raise ChatProviderError("The Gemini service is temporarily unavailable.")
         if response.status_code >= 400:
             # Log the provider's message for the operator; do not show it to end users.
@@ -249,10 +251,167 @@ class GeminiProvider:
             raise ChatProviderError("The model returned an unreadable response.") from None
 
 
+# ----- OpenRouter (OpenAI-compatible chat completions) ------------------------------
+
+_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+
+class OpenRouterProvider:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        *,
+        fallbacks: list[str] | None = None,
+        timeout: float = 45.0,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._api_key = api_key
+        self._model = model
+        self._fallbacks = [m for m in (fallbacks or []) if m and m != model]
+        self._timeout = timeout
+        self._client = client
+
+    @staticmethod
+    def _tool_definition(tool: ToolSpec) -> dict[str, Any]:
+        parameters = tool.parameters if isinstance(tool.parameters, dict) else {}
+        if parameters.get("type") != "object":
+            parameters = {"type": "object", "properties": {}}
+        return {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description[:1500] or tool.name,
+                "parameters": parameters,
+            },
+        }
+
+    @staticmethod
+    def _messages(system: str, turns: list[Turn]) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+        for turn in turns:
+            if turn.role == "user":
+                messages.append({"role": "user", "content": turn.text or ""})
+            elif turn.role == "model":
+                message: dict[str, Any] = {"role": "assistant", "content": turn.text or None}
+                if turn.tool_calls:
+                    message["tool_calls"] = [
+                        {
+                            "id": c.id,
+                            "type": "function",
+                            "function": {"name": c.name, "arguments": json.dumps(c.arguments)},
+                        }
+                        for c in turn.tool_calls
+                    ]
+                elif not turn.text:
+                    message["content"] = ""
+                messages.append(message)
+            else:
+                messages.extend(
+                    {"role": "tool", "tool_call_id": r.call_id, "content": r.content or ("error" if r.is_error else "")}
+                    for r in turn.results
+                )
+        return messages
+
+    async def generate(
+        self, *, system: str, turns: list[Turn], tools: list[ToolSpec]
+    ) -> ModelReply:
+        body: dict[str, Any] = {"model": self._model, "messages": self._messages(system, turns)}
+        if self._fallbacks:
+            body["models"] = [self._model, *self._fallbacks]
+        if tools:
+            body["tools"] = [self._tool_definition(t) for t in tools]
+
+        payload = await self._post(body)
+        choices = payload.get("choices") or []
+        message = (choices[0].get("message") if choices else None) or {}
+
+        text = message.get("content")
+        text = text if isinstance(text, str) else ""
+        calls: list[ToolCall] = []
+        for index, call in enumerate(message.get("tool_calls") or []):
+            function = call.get("function") or {}
+            try:
+                arguments = json.loads(function.get("arguments") or "{}")
+            except ValueError:
+                arguments = {}
+            calls.append(
+                ToolCall(
+                    id=call.get("id") or f"call_{index}",
+                    name=function.get("name") or "",
+                    arguments=arguments if isinstance(arguments, dict) else {},
+                )
+            )
+        if not text and not calls:
+            reason = (choices[0].get("finish_reason") if choices else None) or "no content"
+            logger.warning("OpenRouter returned no usable content (%s)", reason)
+            text = "The model did not return an answer. Try rephrasing your question."
+        return ModelReply(text=text or None, tool_calls=calls)
+
+    async def _post(self, body: dict[str, Any]) -> dict[str, Any]:
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+            "X-Title": "Team MCP Gateway",
+        }
+        client = self._client or httpx.AsyncClient(timeout=self._timeout)
+        try:
+            for attempt in (1, 2):
+                try:
+                    response = await client.post(_OPENROUTER_URL, json=body, headers=headers, timeout=self._timeout)
+                except httpx.TimeoutException:
+                    raise ChatProviderError("The model did not respond in time. Try again.") from None
+                except httpx.RequestError:
+                    raise ChatProviderError("Could not reach the model service.") from None
+
+                if (response.status_code in (408, 429) or response.status_code >= 500) and attempt == 1:
+                    await asyncio.sleep(2.0)
+                    continue
+                break
+        finally:
+            if self._client is None:
+                await client.aclose()
+
+        status_code = response.status_code
+        if status_code in (401, 403):
+            raise ChatProviderError("The OpenRouter API key was rejected. Check OPENROUTER_API_KEY.")
+        if status_code == 402:
+            raise ChatProviderError("OpenRouter reports insufficient credits for this model.")
+        if status_code == 429:
+            raise ChatProviderError("The model rate limit was reached. Wait a moment and retry.")
+        if status_code == 404:
+            logger.error("OpenRouter 404: %s", response.text[:500])
+            raise ChatProviderError(
+                f"Model '{self._model}' was not found or does not support tools. Check OPENROUTER_MODEL."
+            )
+        if status_code >= 500:
+            logger.error("OpenRouter returned %s: %s", status_code, response.text[:500])
+            raise ChatProviderError("The model service is temporarily unavailable.")
+        if status_code >= 400:
+            logger.error("OpenRouter rejected the request: %s", response.text[:500])
+            raise ChatProviderError("The model rejected the request.")
+        try:
+            payload = response.json()
+        except ValueError:
+            raise ChatProviderError("The model returned an unreadable response.") from None
+        if not isinstance(payload, dict):
+            raise ChatProviderError("The model returned an unreadable response.")
+        if payload.get("error") and not payload.get("choices"):
+            # OpenRouter can report upstream provider failures inside a 200 response.
+            logger.error("OpenRouter error: %s", str(payload["error"])[:500])
+            raise ChatProviderError("The model service reported an error. Try again.")
+        return payload
+
+
 def build_provider(settings: Settings) -> LLMProvider | None:
     """The configured provider, or None when no API key is set."""
-    if settings.llm_provider == "gemini" and settings.gemini_api_key:
-        return GeminiProvider(
-            settings.gemini_api_key, settings.gemini_model, timeout=min(45.0, settings.chat_timeout_seconds)
+    timeout = min(45.0, settings.chat_timeout_seconds)
+    choice = settings.llm_provider
+    if choice in ("auto", "openrouter") and settings.openrouter_api_key:
+        fallbacks = [m.strip() for m in settings.openrouter_fallback_models.split(",") if m.strip()]
+        return OpenRouterProvider(
+            settings.openrouter_api_key, settings.openrouter_model, fallbacks=fallbacks, timeout=timeout
         )
+    if choice in ("auto", "gemini") and settings.gemini_api_key:
+        return GeminiProvider(settings.gemini_api_key, settings.gemini_model, timeout=timeout)
     return None

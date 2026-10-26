@@ -34,9 +34,15 @@ class Settings(BaseSettings):
 
     # Chat agent. The key is optional: without it the chat endpoint answers 503 and
     # everything else works. Set GEMINI_API_KEY in the environment to enable it.
-    llm_provider: str = "gemini"
+    # "auto" uses OpenRouter when OPENROUTER_API_KEY is set, otherwise Gemini; or force one.
+    llm_provider: str = "auto"
+    openrouter_api_key: str | None = None
+    # Any OpenRouter model id that supports tool calling, e.g. "openai/gpt-4o-mini".
+    openrouter_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
+    # Comma-separated model ids OpenRouter tries, in order, when the first one fails or is busy.
+    openrouter_fallback_models: str = "poolside/laguna-s-2.1:free,google/gemma-4-31b-it:free"
     gemini_api_key: str | None = None
-    gemini_model: str
+    gemini_model: str = "gemini-3.8-flash"
     chat_max_steps: int = 6
     # Above this many visible tools the agent gets search/describe/run instead of all of them.
     chat_max_direct_tools: int = 40

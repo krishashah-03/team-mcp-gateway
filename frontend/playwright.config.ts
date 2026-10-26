@@ -26,7 +26,7 @@ export default defineConfig({
       command: `"${PYTHON}" -m uvicorn app.main:app --port ${GATEWAY_PORT}`,
       cwd: BACKEND,
       url: `http://127.0.0.1:${GATEWAY_PORT}/health`,
-      env: { GEMINI_API_KEY: "" },
+      env: { GEMINI_API_KEY: "", OPENROUTER_API_KEY: "" },
       reuseExistingServer: false,
       timeout: 60_000,
     },

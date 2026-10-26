@@ -122,6 +122,43 @@ class WooCommerceClient:
         )
         return self._require_object(payload, "create product")
 
+    async def update_product(
+        self,
+        product_id: int,
+        *,
+        name: str | None = None,
+        regular_price: str | None = None,
+        description: str | None = None,
+        status: str | None = None,
+        stock_quantity: int | None = None,
+    ) -> dict[str, Any]:
+        self._validate_id(product_id, "product")
+        body: dict[str, Any] = {}
+        if name is not None:
+            name = name.strip()
+            if not name or len(name) > 200:
+                raise ValueError("Product name must be 1 to 200 characters")
+            body["name"] = name
+        if regular_price is not None:
+            body["regular_price"] = self._validate_price(regular_price)
+        if description is not None:
+            body["description"] = description
+        if status is not None:
+            if status not in SUPPORTED_PRODUCT_STATUSES:
+                raise ValueError("Unsupported product status")
+            body["status"] = status
+        if stock_quantity is not None:
+            if isinstance(stock_quantity, bool) or not isinstance(stock_quantity, int) or not 0 <= stock_quantity <= 1_000_000:
+                raise ValueError("Stock quantity must be a whole number from 0 to 1000000")
+            body["manage_stock"] = True
+            body["stock_quantity"] = stock_quantity
+        if not body:
+            raise ValueError("Provide at least one field to change")
+        payload = await self._request_json(
+            "PUT", f"products/{product_id}", operation="update product", json_body=body
+        )
+        return self._require_object(payload, "update product")
+
     async def list_orders(
         self,
         *,

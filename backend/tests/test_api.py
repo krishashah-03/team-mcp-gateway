@@ -526,6 +526,7 @@ async def test_chat_needs_login(world):
 
 async def test_chat_explains_when_no_model_is_configured(world, monkeypatch):
     monkeypatch.setattr(settings, "gemini_api_key", None)
+    monkeypatch.setattr(settings, "openrouter_api_key", None)
     response = await world.client.post(f"{API}/chat", headers=as_(world, "alice"), json={"message": "hi"})
     assert response.status_code == 503 and "GEMINI_API_KEY" in response.json()["detail"]
 
@@ -679,3 +680,14 @@ async def test_unknown_tool_names_do_not_explode_metric_labels(world):
         await client.call_tool(f"{SLUG}__made_up_{secrets.token_hex(4)}", {})
     scrape = (await world.client.get("/metrics", headers=as_(world, "admin"))).text
     assert "made_up_" not in scrape
+
+
+async def test_dashboard_can_run_a_tool_without_the_chat_model(world):
+    headers = as_(world, "alice")
+    ok = await world.client.post(f"{API}/tools/call", headers=headers, json={"name": f"{SLUG}__echo", "arguments": {"text": "hi"}})
+    assert ok.status_code == 200 and ok.json()["is_error"] is False and "hi" in ok.json()["text"]
+    unknown = await world.client.post(f"{API}/tools/call", headers=headers, json={"name": f"{SLUG}__nope", "arguments": {}})
+    assert unknown.status_code == 200 and unknown.json()["is_error"] is True
+    assert (await world.client.post(f"{API}/tools/call", json={"name": f"{SLUG}__echo"})).status_code == 401
+    events = [e for e in await audit(world, server=SLUG) if e["channel"] == "dashboard"]
+    assert events and events[0]["actor_email"] == world.users["alice"].email

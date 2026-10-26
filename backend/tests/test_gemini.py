@@ -158,7 +158,11 @@ async def test_empty_responses_give_a_friendly_message(payload):
         (400, "rejected the request"),
     ],
 )
-async def test_http_errors_become_safe_messages(status, message):
+async def test_http_errors_become_safe_messages(status, message, monkeypatch):
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(providers.asyncio, "sleep", no_sleep)
     secret_detail = "internal detail with key test-key-123"
     provider = provider_with(lambda r: httpx.Response(status, text=secret_detail))
     with pytest.raises(ChatProviderError, match=message) as excinfo:

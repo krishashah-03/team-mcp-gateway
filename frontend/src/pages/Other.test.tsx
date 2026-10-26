@@ -8,7 +8,7 @@ import ChatPage from "./ChatPage";
 import KeysPage, { keyStatus } from "./KeysPage";
 import PermissionsPage, { describeRule } from "./PermissionsPage";
 import TeamPage from "./TeamPage";
-import ToolsPage, { groupByServer } from "./ToolsPage";
+import ToolsPage, { exampleArguments, groupByServer } from "./ToolsPage";
 
 const apiMock = vi.hoisted(() => ({
   myKeys: vi.fn(),
@@ -21,6 +21,7 @@ const apiMock = vi.hoisted(() => ({
   updateUser: vi.fn(),
   servers: vi.fn(),
   tools: vi.fn(),
+  callTool: vi.fn(),
   permissions: vi.fn(),
   setPermission: vi.fn(),
   deletePermission: vi.fn(),
@@ -414,6 +415,46 @@ describe("ToolsPage", () => {
     await userEvent.clear(screen.getByLabelText("Search tools"));
     await userEvent.type(screen.getByLabelText("Search tools"), "zzzz");
     expect(await screen.findByText("Nothing matches that search")).toBeInTheDocument();
+  });
+
+  it("builds example arguments from the required properties", () => {
+    expect(
+      exampleArguments({
+        type: "object",
+        required: ["name", "qty", "flag"],
+        properties: { name: { type: "string" }, qty: { type: "integer" }, flag: { type: "boolean" }, other: { type: "string" } },
+      }),
+    ).toBe(JSON.stringify({ name: "", qty: 1, flag: false }, null, 2));
+  });
+
+  it("runs a tool directly and shows the result", async () => {
+    apiMock.tools.mockResolvedValue([
+      { name: "utilities__calculate", description: "Do arithmetic", input_schema: { type: "object", required: ["expression"], properties: { expression: { type: "string" } } } },
+    ]);
+    apiMock.callTool.mockResolvedValue({ is_error: false, text: "84" });
+    renderPage(<ToolsPage />);
+    await userEvent.click(await screen.findByText("utilities__calculate"));
+    const box = screen.getByLabelText(/Arguments for utilities__calculate/);
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste('{"expression": "12*(3+4)"}');
+    await userEvent.click(screen.getByRole("button", { name: "Run tool" }));
+    expect(await screen.findByText("84")).toBeInTheDocument();
+    expect(apiMock.callTool).toHaveBeenCalledWith("utilities__calculate", { expression: "12*(3+4)" });
+  });
+
+  it("rejects invalid JSON without calling the gateway", async () => {
+    apiMock.callTool.mockClear();
+    apiMock.tools.mockResolvedValue([{ name: "utilities__calculate", description: null, input_schema: { type: "object" } }]);
+    renderPage(<ToolsPage />);
+    await userEvent.click(await screen.findByText("utilities__calculate"));
+    const box = screen.getByLabelText(/Arguments for utilities__calculate/);
+    await userEvent.clear(box);
+    await userEvent.click(box);
+    await userEvent.paste("{nope");
+    await userEvent.click(screen.getByRole("button", { name: "Run tool" }));
+    expect(await screen.findByText("The arguments are not valid JSON.")).toBeInTheDocument();
+    expect(apiMock.callTool).not.toHaveBeenCalled();
   });
 
   it("explains an empty catalogue", async () => {

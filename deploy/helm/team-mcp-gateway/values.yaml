@@ -1,0 +1,96 @@
+# Default values. Secrets are NOT stored here: the chart reads them from an existing Kubernetes
+# Secret (see `existingSecret` and deploy/secrets.env.example).
+
+image:
+  registry: ""                  # e.g. ghcr.io/your-org ; empty means the names below are used as-is
+  pullPolicy: IfNotPresent
+  tag: local                    # applies to every image below unless overridden
+  gateway: team-mcp-gateway/gateway
+  web: team-mcp-gateway/web
+  woocommerceMcp: team-mcp-gateway/woocommerce-mcp
+  utilitiesMcp: team-mcp-gateway/utilities-mcp
+  docsMcp: team-mcp-gateway/docs-mcp
+imagePullSecrets: []
+
+# Name of a Secret you create before installing. Keys:
+#   required: POSTGRES_PASSWORD (when postgres.enabled) or DATABASE_URL (external database),
+#             JWT_SECRET, CREDENTIAL_ENCRYPTION_KEY,
+#             WOOCOMMERCE_MCP_TOKEN, UTILITIES_MCP_TOKEN, DOCS_MCP_TOKEN,
+#             WOOCOMMERCE_CONSUMER_KEY, WOOCOMMERCE_CONSUMER_SECRET
+#   optional: BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_ADMIN_PASSWORD, OPENROUTER_API_KEY, GEMINI_API_KEY, METRICS_TOKEN
+existingSecret: team-mcp-gateway-secrets
+
+# Hostnames clients use to reach the gateway (Host header allow-list). Add your Ingress host.
+publicHosts: "localhost:*,127.0.0.1:*"
+
+gateway:
+  replicas: 1                   # rate limits and the tool cache are per process; see docs/system-design.md
+  logFormat: json
+  # Chat model. With OPENROUTER_API_KEY in the Secret, OpenRouter is used (any tool-calling model id);
+  # otherwise Gemini if GEMINI_API_KEY is set.
+  llmProvider: gemini             # gemini | openrouter | auto (auto: OpenRouter if its key is set, else Gemini)
+  openrouterModel: nvidia/nemotron-3-super-120b-a12b:free
+  openrouterFallbackModels: poolside/laguna-s-2.1:free,google/gemma-4-31b-it:free   # comma-separated, tried in order
+  geminiModel: gemini-3.8-flash
+  # init: an init container migrates the database before the gateway starts (fine for 1 replica)
+  # hook: a Helm pre-install/pre-upgrade Job migrates (use with an external database and replicas > 1)
+  migrations: init
+  resources:
+    requests: {cpu: 100m, memory: 192Mi}
+    limits: {memory: 512Mi}
+  extraEnv: {}                  # any other gateway setting, e.g. {CHAT_MAX_STEPS: "8", GEMINI_MODEL: "gemini-3.8-flash"}
+
+web:
+  replicas: 1
+  resources:
+    requests: {cpu: 20m, memory: 32Mi}
+    limits: {memory: 128Mi}
+
+woocommerce:
+  baseUrl: https://your-store.example.com   # must be HTTPS; WooCommerce ignores API keys over plain HTTP
+  # A store with a private CA (Local by Flywheel): create a Secret with the certificate under key ca.crt
+  #   kubectl create secret generic woocommerce-ca --from-file=ca.crt=path/to/store.crt
+  caBundleSecret: ""
+  # Makes a store hostname resolve to an address (e.g. the Docker host for a store on your machine)
+  hostAliases: []               # - {ip: "192.168.65.254", hostnames: ["mcp-store.local"]}
+  replicas: 1
+  resources:
+    requests: {cpu: 50m, memory: 96Mi}
+    limits: {memory: 256Mi}
+
+utilities:
+  replicas: 1
+  resources:
+    requests: {cpu: 20m, memory: 64Mi}
+    limits: {memory: 192Mi}
+
+docs:
+  replicas: 1
+  resources:
+    requests: {cpu: 20m, memory: 64Mi}
+    limits: {memory: 192Mi}
+
+postgres:
+  enabled: true                 # false: use an external database and put DATABASE_URL in the Secret
+  image: postgres:17
+  database: team_mcp_gateway
+  user: mcp_app
+  storage: 5Gi
+  storageClass: ""              # empty means the cluster default
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 512Mi}
+
+ingress:
+  enabled: false
+  className: ""                 # traefik (k3s default) or nginx
+  host: gateway.example.com
+  annotations: {}               # nginx-ingress: {nginx.ingress.kubernetes.io/proxy-buffering: "off", nginx.ingress.kubernetes.io/proxy-read-timeout: "300"}
+  tls:
+    enabled: false
+    secretName: team-mcp-gateway-tls
+
+# Only the intended paths are open: ingress -> web -> gateway -> {postgres, MCP servers}.
+# Needs a CNI that enforces NetworkPolicy (k3s does; Docker Desktop's built-in cluster does not).
+networkPolicy:
+  enabled: true

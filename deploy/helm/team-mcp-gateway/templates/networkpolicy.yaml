@@ -1,0 +1,96 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $fn := include "tmg.fullname" . }}
+# Every pod starts closed to incoming traffic...
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fn }}-default-deny
+  labels:
+    {{- include "tmg.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/name: {{ .Chart.Name }}
+  policyTypes: [Ingress]
+---
+# ...then only these paths are opened: anyone -> web (the single entry point; the ingress controller
+# or a port-forward lives outside this chart's pods)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fn }}-allow-web
+  labels:
+    {{- include "tmg.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tmg.selector" (dict "root" . "component" "web") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{port: 8080}]
+---
+# web -> gateway
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fn }}-allow-gateway-from-web
+  labels:
+    {{- include "tmg.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tmg.selector" (dict "root" . "component" "gateway") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "tmg.selector" (dict "root" . "component" "web") | nindent 14 }}
+      ports: [{port: 8000}]
+---
+# gateway -> the three MCP servers (and nothing else, including the dashboard, may call them)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fn }}-allow-mcp-from-gateway
+  labels:
+    {{- include "tmg.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [woocommerce-mcp, utilities-mcp, docs-mcp]
+      - key: app.kubernetes.io/instance
+        operator: In
+        values: [{{ .Release.Name }}]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "tmg.selector" (dict "root" . "component" "gateway") | nindent 14 }}
+      ports: [{port: 8001}, {port: 8003}, {port: 8004}]
+{{- if .Values.postgres.enabled }}
+---
+# gateway -> postgres
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fn }}-allow-postgres-from-gateway
+  labels:
+    {{- include "tmg.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tmg.selector" (dict "root" . "component" "postgres") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "tmg.selector" (dict "root" . "component" "gateway") | nindent 14 }}
+      ports: [{port: 5432}]
+{{- end }}
+{{- end }}

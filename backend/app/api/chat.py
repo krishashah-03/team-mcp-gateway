@@ -27,7 +27,7 @@ def get_chat_provider(request: Request) -> LLMProvider:
     if provider is None:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Chat is not configured: set GEMINI_API_KEY (and restart the gateway).",
+            detail="Chat is not configured: set OPENROUTER_API_KEY or GEMINI_API_KEY (and restart the gateway).",
         )
     return provider
 

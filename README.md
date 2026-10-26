@@ -1,14 +1,14 @@
 # Team MCP Gateway
-
 One MCP endpoint for a whole team. An admin connects MCP servers once; every team member
 uses all of them through a single gateway URL (from Claude Code, Cursor, MCP Inspector) or
 through a chat agent. The first data source is a WooCommerce store.
 
-> **Status:** backend, React dashboard and Docker packaging are complete and tested. Not yet built:
-> Helm charts / Kubernetes deployment.
+> **Status:** The repository includes the FastAPI gateway, React dashboard, service Dockerfiles,
+> and a Helm chart. Verify the target environment before describing a local or Kubernetes deployment
+> as running; this README does not claim that a deployment has been tested.
 
 ```
- MCP clients (Claude Code, Cursor, Inspector)         Dashboard (React) / chat
+ MCP clients (Claude Code, Cursor, Inspector)         React dashboard / chat
             |  Bearer gwk_...                                |  session token
             v                                                v
         POST /mcp  /lite/mcp                          /api/v1/*  (admin API, chat)
@@ -29,16 +29,14 @@ Nothing but the gateway talks to the upstream servers. Upstream credentials neve
 
 | Path | What it is |
 |---|---|
-| `frontend/` | Dashboard (React, TypeScript, Vite) and its nginx config |
 | `backend/` | Gateway and admin API (FastAPI, SQLAlchemy, Alembic) |
 | `backend/app/gateway/` | Upstream connector, tool aggregation, `/mcp` and `/lite/mcp` endpoints |
-| `backend/app/chat/` | Chat agent: tool loop and the Gemini adapter |
+| `backend/app/chat/` | Chat agent: tool loop with Gemini and OpenRouter adapters |
 | `mcp-servers/woocommerce/` | WooCommerce MCP server (written for this project; REST API) |
 | `mcp-servers/utilities/` | Time, unit conversion, safe calculator |
 | `mcp-servers/docs-search/` | Search and read a folder of documents (sample store policies included) |
 | `compose.yaml` | PostgreSQL for local development |
-| `compose.full.yaml` | The whole stack in Docker, layered on `compose.yaml` |
-| `docs/` | Docker guide, system design and tradeoffs, threat model |
+| `docs/` | System design and tradeoffs, threat model |
 
 ## Run it locally (Windows / PowerShell)
 
@@ -73,7 +71,7 @@ SEED_WOOCOMMERCE_TOKEN=<same value as the WooCommerce server's MCP_AUTH_TOKEN>
 SEED_UTILITIES_URL=http://127.0.0.1:8003/mcp
 SEED_DOCS_URL=http://127.0.0.1:8004/mcp
 
-GEMINI_API_KEY=<optional, enables the chat agent>
+OPENROUTER_API_KEY=<optional, enables the chat agent (or GEMINI_API_KEY)>
 ```
 
 Create `mcp-servers/woocommerce/.env`:
@@ -87,7 +85,7 @@ WOOCOMMERCE_CA_BUNDLE=C:\path\to\your-store.local.crt
 MCP_AUTH_TOKEN=<random secret shared with the gateway>
 ```
 
-Start the four services, each in its own terminal (use the backend's venv Python):
+Start the four backend services, each in its own terminal (use the backend's venv Python):
 
 ```powershell
 cd mcp-servers\woocommerce; ..\..\backend\.venv\Scripts\python.exe -m woocommerce_mcp   # :8001
@@ -96,12 +94,11 @@ cd mcp-servers\docs-search; ..\..\backend\.venv\Scripts\python.exe -m docs_searc
 cd backend;                 .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8000
 ```
 
-Then the dashboard (it proxies `/api` and `/mcp` to the gateway on port 8000):
+Start the dashboard in another terminal (frontend dependencies must already be available):
 
 ```powershell
 cd frontend
-npm install
-npm run dev          # http://127.0.0.1:5173  (sign in with the bootstrap admin)
+npm run dev   # http://127.0.0.1:5173; proxies /api, /mcp and /lite to the gateway
 ```
 
 API docs: http://127.0.0.1:8000/docs. Use `127.0.0.1`, not `0.0.0.0`, in a browser. If a port is
@@ -120,7 +117,8 @@ API docs: http://127.0.0.1:8000/docs. Use `127.0.0.1`, not `0.0.0.0`, in a brows
 | `MAX_BODY_BYTES` | `1048576` | Request size cap |
 | `GATEWAY_ALLOWED_HOSTS` | `localhost:*,127.0.0.1:*` | Host headers accepted on `/mcp`; add your public host |
 | `CORS_ORIGINS` | `http://localhost:5173` | Allowed dashboard origins |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Chat model |
+| `OPENROUTER_MODEL` | `nvidia/nemotron-3-super-120b-a12b:free` | Chat model when `OPENROUTER_API_KEY` is set (any tool-calling model id) |
+| `GEMINI_MODEL` | `gemini-3.8-flash` | Chat model when only `GEMINI_API_KEY` is set |
 | `CHAT_MAX_STEPS`, `CHAT_MAX_DIRECT_TOOLS` | `6`, `40` | Tool-loop limit; above this many tools the agent switches to search-then-run |
 | `LOG_FORMAT`, `LOG_LEVEL` | `text`, `INFO` | `json` for log collectors |
 | `METRICS_TOKEN` | unset | Scrape token for `/metrics` (otherwise an admin session is required) |
@@ -142,52 +140,57 @@ Header: Authorization: Bearer gwk_...
 MCP Inspector: `npx @modelcontextprotocol/inspector`, choose *Streamable HTTP*, set the URL and header.
 Tool names are prefixed with their server: `woocommerce__list_orders`, `utilities__calculate`.
 
-**Chat agent:** set `GEMINI_API_KEY`, restart the gateway, then `POST /api/v1/chat`
-`{"message": "what orders came in today?"}`. The response lists the tools it called. It acts as the
-signed-in user, so its calls are checked against that user's permissions and audited under their name.
+**Chat agent:** set `OPENROUTER_API_KEY` or `GEMINI_API_KEY`, restart the gateway, then use Chat in the
+dashboard or call `POST /api/v1/chat` with `{"message": "what orders came in today?"}`. The response
+lists the tools it called. It acts as the signed-in user, so its calls are checked against that user's
+permissions and audited under their name. One chat turn may make several model requests while the
+agent decides which tools to call and processes their results.
+
+**Run a tool without the chat model:** open the dashboard's *Tools* page, search for a tool, expand it,
+edit its JSON arguments and press *Run tool* (`POST /api/v1/tools/call`). This path does not call Gemini
+or OpenRouter. It is checked against the signed-in user's permissions and audited like any other call.
+For example, use `woocommerce__list_products` with `{"page":1,"per_page":5}` to list products. To
+create a safe demo item, use `woocommerce__create_product` with
+`{"name":"Demo Blue Mug","price":"349","description":"Demo item","status":"draft"}`.
+Creating or updating a product changes the connected WooCommerce store; use a test store for demos.
+`deploy/scripts/seed-products.ps1` also creates three sample products. The WooCommerce server exposes
+`get_product` and `update_product` (name, price, description, status, stock).
+
+**Chat errors and rate limits:** a `503` from the chat route means no model provider was configured.
+The gateway's own per-user `/chat` request limit returns `429`. A provider-side `429` or `5xx` is
+reported by the current chat route as `502` after one short retry. These are separate limits from the
+WooCommerce MCP server. If the model is throttled during a demo, use *Tools* → *Run tool* for product
+listing and changes; it bypasses the model provider while retaining gateway permissions and audit logging.
 
 **Restrict tools:** `POST /api/v1/permissions`, for example
 `{"role": "member", "server_slug": "woocommerce", "tool_name": "create_product", "effect": "deny"}`.
 Hidden from listings and rejected if called directly. User rules beat role rules; tool rules beat
 server-wide rules; deny beats allow at equal specificity; no rule means allowed.
 
-## Run it all in Docker
-
-```powershell
-docker compose -f compose.yaml -f compose.full.yaml up -d --build     # dashboard on http://127.0.0.1:8080
-```
-
-See [docs/docker.md](docs/docker.md) for the required settings, how the containers and networks are
-arranged, and how to point it at a store running on your machine.
-
 ## Test it
 
-| Suite | Command | Tests |
-|---|---|---|
-| Gateway (unit, database, HTTP integration) | `cd backend; python -m pytest` | 298 |
-| WooCommerce MCP server | `cd mcp-servers/woocommerce; python -m pytest` | 65 |
-| Utilities MCP server | `cd mcp-servers/utilities; python -m pytest` | 52 |
-| Docs-search MCP server | `cd mcp-servers/docs-search; python -m pytest` | 25 (1 skipped without symlink rights) |
-| Dashboard (components, flows, API client) | `cd frontend; npm test` | 109 |
-| Dashboard in a real browser, real gateway | `cd frontend; npm run test:e2e` | 12 |
-| The containerized stack, through nginx | `cd frontend; npm run test:e2e:stack` (see docs/docker.md) | 5 |
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m pytest                      # 284 tests, ~30 s; needs Postgres running
+cd ..\mcp-servers\woocommerce; ..\..\backend\.venv\Scripts\python.exe -m pytest   # 65 tests
+cd ..\utilities;               ..\..\backend\.venv\Scripts\python.exe -m pytest   # 52 tests
+cd ..\docs-search;             ..\..\backend\.venv\Scripts\python.exe -m pytest   # 25 tests
+```
 
-Use the backend's virtualenv Python for the Python suites. The gateway suite needs PostgreSQL running;
-its database tests roll back and its HTTP tests delete everything they create. The browser suite starts
-its own gateway (port 8010), a fixture MCP server and the dashboard, creates a throwaway admin directly
-in the database, and removes everything afterwards; it sets an empty `GEMINI_API_KEY`, so it never calls
-a model. `backend/tests/e2e_smoke.py` is an additional end-to-end script for a *running* system including
-the real WooCommerce store: start the gateway and the WooCommerce server, then run it.
+The backend suite includes database-backed tests (rolled back after each test) and HTTP tests
+that run the real app against a real fixture MCP server; they delete everything they create.
+`backend/tests/e2e_smoke.py` is an end-to-end script for the *running* system, including the real
+WooCommerce store: start the gateway and the WooCommerce server, then run it.
 
 ## Docs
 
-- [Running in Docker](docs/docker.md)
+- [Architecture diagram (SVG)](docs/architecture-demo.svg) · [diagram notes](docs/architecture-demo.md)
 - [System design and tradeoffs](docs/system-design.md)
 - [Threat model](docs/threat-model.md)
 
-## Not done yet
+## Remaining work and deployment notes
 
-Helm charts and Kubernetes/k3s deployment (the images, health checks, non-root users and read-only
-filesystems are ready for it), OAuth on the gateway, multi-store provisioning, and a real-model test of
-the chat agent (it is tested with a scripted model and a mocked Gemini API). Rate limits and the tool
-cache are per process, which matters once the gateway runs more than one replica (see the design note).
+OAuth on the gateway and multi-store provisioning are not implemented. Helm chart sources are under
+`deploy/helm/team-mcp-gateway/`; review the selected values and rendered resources before presenting
+a specific Kubernetes deployment as verified. Rate limits and the tool cache are per process, which
+matters once the gateway runs more than one replica (see the design note).

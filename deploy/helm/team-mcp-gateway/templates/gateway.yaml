@@ -1,0 +1,109 @@
+{{- $fn := include "tmg.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-gateway
+  labels:
+    {{- include "tmg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      {{- include "tmg.selector" (dict "root" . "component" "gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tmg.selector" (dict "root" . "component" "gateway") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- include "tmg.pullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "tmg.podSecurity" (dict "uid" 10001) | nindent 8 }}
+      {{- if eq .Values.gateway.migrations "init" }}
+      initContainers:
+        - name: migrate
+          image: {{ include "tmg.image" (dict "root" . "name" .Values.image.gateway) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [alembic, upgrade, head]
+          env:
+            {{- include "tmg.gatewayEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "tmg.containerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      {{- end }}
+      containers:
+        - name: gateway
+          image: {{ include "tmg.image" (dict "root" . "name" .Values.image.gateway) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - {name: http, containerPort: 8000}
+          env:
+            {{- include "tmg.gatewayEnv" . | nindent 12 }}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 4
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 4
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          securityContext:
+            {{- include "tmg.containerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fn }}-gateway
+  labels:
+    {{- include "tmg.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "tmg.selector" (dict "root" . "component" "gateway") | nindent 4 }}
+  ports:
+    - {name: http, port: 8000, targetPort: http}
+{{- if eq .Values.gateway.migrations "hook" }}
+---
+# Single migration run before each install/upgrade (use when the gateway has several replicas).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fn }}-migrate
+  labels:
+    {{- include "tmg.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      {{- include "tmg.pullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "tmg.podSecurity" (dict "uid" 10001) | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "tmg.image" (dict "root" . "name" .Values.image.gateway) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [alembic, upgrade, head]
+          env:
+            {{- include "tmg.gatewayEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "tmg.containerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

@@ -1,0 +1,13 @@
+# Overrides for a local cluster (Docker Desktop Kubernetes, k3s, kind) using locally built images.
+#   helm install tmg deploy/helm/team-mcp-gateway -f deploy/helm/team-mcp-gateway/values-local.yaml \
+#     --set woocommerce.baseUrl=https://your-store.local
+image:
+  tag: local
+  pullPolicy: Never             # use the images you built on this machine
+
+gateway:
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+
+# Reached with: kubectl port-forward svc/<release>-web 8080:8080  -> http://localhost:8080
+publicHosts: "localhost:*,127.0.0.1:*"

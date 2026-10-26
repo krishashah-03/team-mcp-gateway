@@ -1,0 +1,60 @@
+{{- $fn := include "tmg.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fn }}-web
+  labels:
+    {{- include "tmg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      {{- include "tmg.selector" (dict "root" . "component" "web") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tmg.selector" (dict "root" . "component" "web") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- include "tmg.pullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- include "tmg.podSecurity" (dict "uid" 101) | nindent 8 }}
+      containers:
+        - name: web
+          image: {{ include "tmg.image" (dict "root" . "name" .Values.image.web) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - {name: GATEWAY_UPSTREAM, value: "{{ $fn }}-gateway:8000"}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          securityContext:
+            {{- include "tmg.containerSecurity" . | nindent 12 }}
+          # nginx renders its config from a template at start-up, so that directory and /tmp are writable.
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: conf, mountPath: /etc/nginx/conf.d}
+      volumes:
+        - {name: tmp, emptyDir: {medium: Memory}}
+        - {name: conf, emptyDir: {medium: Memory}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fn }}-web
+  labels:
+    {{- include "tmg.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "tmg.selector" (dict "root" . "component" "web") | nindent 4 }}
+  ports:
+    - {name: http, port: 8080, targetPort: http}
