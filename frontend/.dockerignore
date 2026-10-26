@@ -1,0 +1,20 @@
+# Secrets must never end up in an image layer
+.env
+.env.*
+!.env.example
+# Local tooling and build output
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+node_modules
+dist
+test-results
+playwright-report
+tests
+pytest.ini
+*.log
+Dockerfile
+.dockerignore

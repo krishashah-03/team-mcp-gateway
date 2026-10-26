@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: team-mcp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: team_mcp_gateway
+      POSTGRES_USER: mcp_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcp_app -d team_mcp_gateway"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

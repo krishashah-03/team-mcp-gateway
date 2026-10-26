@@ -1,0 +1,114 @@
+# The full application stack, layered on top of compose.yaml (which provides PostgreSQL):
+#
+#   docker compose -f compose.yaml -f compose.full.yaml up -d --build
+#
+# Needs secrets in the shell environment or in a .env file next to these files; see
+# docs/docker.md. Only the dashboard is published, on 127.0.0.1.
+services:
+  # ---- the gateway: the only service that talks to PostgreSQL and to the MCP servers ----
+  gateway:
+    build: ./backend
+    image: team-mcp-gateway/gateway:local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [default, edge]
+    environment:
+      RUN_MIGRATIONS: "1"
+      DATABASE_URL: postgresql+psycopg://mcp_app:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/team_mcp_gateway
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (at least 32 random characters)}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?set CREDENTIAL_ENCRYPTION_KEY (a Fernet key)}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      SEED_WOOCOMMERCE_URL: http://woocommerce-mcp:8001/mcp
+      SEED_WOOCOMMERCE_TOKEN: ${WOOCOMMERCE_MCP_TOKEN:?set WOOCOMMERCE_MCP_TOKEN}
+      SEED_UTILITIES_URL: http://utilities-mcp:8003/mcp
+      SEED_UTILITIES_TOKEN: ${UTILITIES_MCP_TOKEN:?set UTILITIES_MCP_TOKEN}
+      SEED_DOCS_URL: http://docs-mcp:8004/mcp
+      SEED_DOCS_TOKEN: ${DOCS_MCP_TOKEN:?set DOCS_MCP_TOKEN}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Production network policy: upstream URLs may only point at these three servers.
+      UPSTREAM_ALLOW_PRIVATE_NETWORKS: "false"
+      UPSTREAM_ALLOWED_HOSTS: woocommerce-mcp,utilities-mcp,docs-mcp
+      # Hostnames clients use to reach the dashboard/gateway.
+      GATEWAY_ALLOWED_HOSTS: ${PUBLIC_HOSTS:-localhost:*,127.0.0.1:*}
+      # Only the dashboard's proxy can reach this container, so trust its forwarded address.
+      FORWARDED_ALLOW_IPS: "*"
+      LOG_FORMAT: json
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  # ---- the dashboard (nginx): the single public entry point, for browsers and MCP clients ----
+  web:
+    build: ./frontend
+    image: team-mcp-gateway/web:local
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks: [edge]
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8080}:8080"
+    environment:
+      GATEWAY_UPSTREAM: gateway:8000
+    read_only: true
+    # nginx renders its config from a template at start-up, so that one directory (and /tmp)
+    # must be writable. They live in memory and are owned by the unprivileged nginx user.
+    tmpfs:
+      - /tmp
+      - /etc/nginx/conf.d:uid=101,gid=101,mode=0755
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  # ---- upstream MCP servers: no published ports, reachable only from the gateway ----
+  woocommerce-mcp:
+    build: ./mcp-servers/woocommerce
+    image: team-mcp-gateway/woocommerce-mcp:local
+    restart: unless-stopped
+    environment:
+      WOOCOMMERCE_BASE_URL: ${WOOCOMMERCE_BASE_URL:?set WOOCOMMERCE_BASE_URL}
+      WOOCOMMERCE_CONSUMER_KEY: ${WOOCOMMERCE_CONSUMER_KEY:?set WOOCOMMERCE_CONSUMER_KEY}
+      WOOCOMMERCE_CONSUMER_SECRET: ${WOOCOMMERCE_CONSUMER_SECRET:?set WOOCOMMERCE_CONSUMER_SECRET}
+      WOOCOMMERCE_CA_BUNDLE: ${WOOCOMMERCE_CA_BUNDLE:-}
+      MCP_AUTH_TOKEN: ${WOOCOMMERCE_MCP_TOKEN:?set WOOCOMMERCE_MCP_TOKEN}
+      MCP_ALLOWED_HOSTS: woocommerce-mcp:*
+    # Lets a store that runs on the Docker host (for example Local) be reached by its hostname.
+    extra_hosts:
+      - "${STORE_HOSTNAME:-store.invalid}:host-gateway"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  utilities-mcp:
+    build: ./mcp-servers/utilities
+    image: team-mcp-gateway/utilities-mcp:local
+    restart: unless-stopped
+    environment:
+      MCP_AUTH_TOKEN: ${UTILITIES_MCP_TOKEN:?set UTILITIES_MCP_TOKEN}
+      MCP_ALLOWED_HOSTS: utilities-mcp:*
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  docs-mcp:
+    build: ./mcp-servers/docs-search
+    image: team-mcp-gateway/docs-mcp:local
+    restart: unless-stopped
+    environment:
+      MCP_AUTH_TOKEN: ${DOCS_MCP_TOKEN:?set DOCS_MCP_TOKEN}
+      MCP_ALLOWED_HOSTS: docs-mcp:*
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  # default: PostgreSQL, the gateway and the MCP servers.
+  # edge: the dashboard and the gateway only, so the dashboard cannot reach the database
+  # or any MCP server.
+  edge:
